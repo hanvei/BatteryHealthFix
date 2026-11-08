@@ -6,10 +6,15 @@
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 
+// ============= 手动声明 IOKit 类型和函数（避免 theos vendor headers 冲突）=============
+typedef struct IORegistryEntry *io_registry_entry_t;
+typedef UInt32 IOOptionBits;
+
 extern CFTypeRef IORegistryEntryCreateCFProperty(
     io_registry_entry_t entry, CFStringRef key,
     CFAllocatorRef allocator, IOOptionBits options
 );
+// =====================================================================================
 
 static CFTypeRef (*orig_IORegistryEntryCreateCFProperty)(
     io_registry_entry_t entry, CFStringRef key,
@@ -47,7 +52,7 @@ static CFTypeRef hook_IORegistryEntryCreateCFProperty(
         [keyStr isEqualToString:@"DesignedCapacity"] ||
         [keyStr isEqualToString:@"AppleBatteryDesignCapacity"]) {
         if (realValue) CFRelease(realValue);
-        NSLog(@"[BHF] 🔒 %@ → %d", keyStr, kNewCellDesignedCapacity);
+        NSLog(@"[BHF] %@ → %d", keyStr, kNewCellDesignedCapacity);
         return CFRetain((__bridge CFTypeRef)@(kNewCellDesignedCapacity));
     }
     
