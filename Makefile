@@ -1,5 +1,5 @@
 ARCHS = arm64 arm64e
-TARGET = iphone:clang:16.5:16.0
+TARGET = iphone:clang::16.0
 
 INSTALL_TARGET_PROCESSES = SpringBoard BatteryService
 
