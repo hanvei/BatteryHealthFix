@@ -1,0 +1,34 @@
+name: Build BatteryHealthFix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Theos
+        run: |
+          git clone --depth 1 https://github.com/theos/theos.git /opt/theos
+          cd /opt/theos && git submodule update --init --recursive || true
+          curl -L https://github.com/kabiroberai/theos-toolchain-linux/releases/download/2023.05/iphoneos-toolchain.tar.gz | tar xz -C /opt
+          curl -L https://github.com/theos/sdks/archive/refs/tags/v16.5.tar.gz | tar xz -C /opt/theos/sdks --strip-components=1
+
+      - name: Build tweak
+        run: |
+          export THEOS=/opt/theos
+          cd .
+          make clean
+          make package THEOS=/opt/theos
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryHealthFix-deb
+          path: packages/*.deb
+          if-no-files-found: error
