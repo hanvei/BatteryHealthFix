@@ -14,18 +14,13 @@ jobs:
 
       - name: Setup Theos
         run: |
+          brew install ldid
           git clone --depth 1 https://github.com/theos/theos.git ~/theos
           cd ~/theos && git submodule update --init --recursive || true
-
-          echo "=== 本机可用的 iPhoneOS SDK ==="
-          ls -d $(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS*.sdk 2>/dev/null
-          echo "=== 可用工具链 ==="
-          ls -d $(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain 2>/dev/null
 
       - name: Build
         run: |
           export THEOS=$HOME/theos
-          # 让 theos 自动找最新的 SDK，不硬编码版本号
           make clean 2>/dev/null || true
           make package THEOS=$THEOS
 
