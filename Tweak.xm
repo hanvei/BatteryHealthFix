@@ -1,20 +1,21 @@
 /*
  * BatteryHealthFix v1.4 —— 精准修复版
- * 适用：iPhone XS Max, iOS 16.5 (已越狱)
  */
 
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 
-// ============= 手动声明 IOKit 类型和函数（避免 theos vendor headers 冲突）=============
-typedef struct IORegistryEntry *io_registry_entry_t;
-typedef UInt32 IOOptionBits;
-
-extern CFTypeRef IORegistryEntryCreateCFProperty(
-    io_registry_entry_t entry, CFStringRef key,
-    CFAllocatorRef allocator, IOOptionBits options
-);
-// =====================================================================================
+// ============= C 函数声明（extern "C" 避免 C++ 符号 mangling）=============
+extern "C" {
+    typedef struct IORegistryEntry *io_registry_entry_t;
+    typedef UInt32 IOOptionBits;
+    
+    CFTypeRef IORegistryEntryCreateCFProperty(
+        io_registry_entry_t entry, CFStringRef key,
+        CFAllocatorRef allocator, IOOptionBits options
+    );
+}
+// ==========================================================================
 
 static CFTypeRef (*orig_IORegistryEntryCreateCFProperty)(
     io_registry_entry_t entry, CFStringRef key,
