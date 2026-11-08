@@ -1,0 +1,9 @@
+#!/bin/bash
+# BatteryHealthFix postrm —— 卸载后清理
+
+echo "[BatteryHealthFix] postrm 开始执行..."
+
+killall BatteryService 2>/dev/null || true
+killall SpringBoard 2>/dev/null || true
+
+echo "[BatteryHealthFix] postrm 完成"
