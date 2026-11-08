@@ -12,18 +12,20 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install Theos
+      - name: Setup Theos
         run: |
+          echo "=== Xcode ==="
+          xcode-select -p
+          xcrun --sdk iphoneos --show-sdk-path || true
+
+          echo "=== Theos ==="
           git clone --depth 1 https://github.com/theos/theos.git ~/theos
           cd ~/theos && git submodule update --init --recursive || true
-          curl -sL "https://github.com/theos/sdks/archive/refs/heads/master.tar.gz" -o /tmp/sdks.tar.gz
-          mkdir -p ~/theos/sdks
-          tar xzf /tmp/sdks.tar.gz -C ~/theos/sdks --strip-components=1
-          ls ~/theos/sdks/ | grep iphoneos
 
       - name: Build
         run: |
           export THEOS=$HOME/theos
+          export SDKVERSION=16.5
           make clean 2>/dev/null || true
           make package THEOS=$THEOS
 
