@@ -8,23 +8,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: kabiroberai/theos:latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Set up Theos
-        run: |
-          git clone --depth 1 https://github.com/theos/theos.git /opt/theos
-          cd /opt/theos && git submodule update --init --recursive || true
-          curl -L https://github.com/kabiroberai/theos-toolchain-linux/releases/download/2023.05/iphoneos-toolchain.tar.gz | tar xz -C /opt
-          curl -L https://github.com/theos/sdks/archive/refs/tags/v16.5.tar.gz | tar xz -C /opt/theos/sdks --strip-components=1
-
       - name: Build tweak
         run: |
-          export THEOS=/opt/theos
-          cd .
-          make clean
-          make package THEOS=/opt/theos
+          export THEOS=/theos
+          echo "=== 当前目录 ===" && ls -la
+          echo "=== THEOS 路径 ===" && ls -la /theos 2>&1 | head -10
+          echo "=== 开始编译 ==="
+          make clean || true
+          make package THEOS=/theos
+
+      - name: Check build output
+        run: |
+          echo "=== 编译产物 ==="
+          ls -la packages/ 2>/dev/null || echo "packages/ 不存在"
+          find . -name "*.deb" 2>/dev/null
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
