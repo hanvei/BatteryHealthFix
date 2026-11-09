@@ -1,21 +1,13 @@
 #!/bin/bash
-# BatteryHealthFix postinst —— 安装后处理
-# 作用：重启 SpringBoard 和 BatteryService 让 Tweak 生效
+# BatteryHealthFix postinst —— 安装后自动处理（rootless/rootful 自适应）
 
-echo "[BatteryHealthFix] postinst 开始执行..."
+DYLIB="/var/jb/Library/MobileSubstrate/DynamicLibraries/BatteryHealthFix.dylib"
+[ -f "$DYLIB" ] || DYLIB="/Library/MobileSubstrate/DynamicLibraries/BatteryHealthFix.dylib"
 
-# 杀掉 BatteryService（iOS 会自动重启）
-if [ -d /System/Library/LaunchDaemons ]; then
-    killall BatteryService 2>/dev/null || true
-    echo "[BatteryHealthFix] BatteryService 已重启"
-fi
+chown root:wheel "$DYLIB" 2>/dev/null || true
+chmod 0644 "$DYLIB" 2>/dev/null || true
 
-# 设置 Tweak 库权限
-chown root:wheel /Library/Tweaks/BatteryHealthFix.dylib 2>/dev/null || true
-chmod 0644 /Library/Tweaks/BatteryHealthFix.dylib 2>/dev/null || true
-
-# 重启 SpringBoard（让设置界面的 Hook 生效）
+killall BatteryService 2>/dev/null || true
 killall SpringBoard 2>/dev/null || true
-echo "[BatteryHealthFix] SpringBoard 已重启"
 
-echo "[BatteryHealthFix] postinst 完成"
+echo "[BatteryHealthFix] 安装完成，桌面即将重启"

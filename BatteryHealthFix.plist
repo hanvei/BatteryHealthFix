@@ -1,1 +1,1 @@
-{ Filter = { Bundles = ( "com.apple.springboard", "com.apple.BatteryService" ); }; }
+{ Filter = { Bundles = ( "com.apple.springboard", "com.apple.BatteryService", "com.apple.Preferences" ); }; }
