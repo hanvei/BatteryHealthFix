@@ -1,148 +1,121 @@
 /*
- * BatteryHealthFix v1.4 —— 精准修复版
+ * BatteryHealthFix v1.6 —— 开源实现验证版
+ *
+ * 签名考证（来自仍在维护的 iOS16 开源插件 Luki120/CycleCount 与 exelban/stats）：
+ *   CFTypeRef IORegistryEntryCreateCFProperty(entry, key, allocator, options)
+ *   ← 4 参数、按值返回（+1 创建规则）。v1.5 注释里写的 5 参签名是错的（那是
+ *     复数版 IORegistryEntryCreateCFProperties 的形状），本版纠正。
+ *
+ * v1.0.1 翻车真因复盘（对照仓库 v1.4 源码）：
+ *   1) 诊断日志用共享 NSMutableSet 记录已打印键，多线程并发读写 → 随机崩溃
+ *   2) 全局 hook -[NSUserDefaults objectForKey:] 篡改 PeakPerformance/认证键
+ *   3) 伪造 Pairing/IsAppleBattery 键，BatteryService 拿到意外类型 → 数据发布失败
+ *   → 三者叠加导致设置页电池项消失。
+ *
+ * v1.6 原则：零共享状态、零伪造、只改"设计容量"一个语义：
+ *   - 单键读取（4参版）：DesignCapacity/DesignedCapacity/AppleBatteryDesignCapacity → 3500
+ *   - BatteryData 字典（若内嵌 DesignCapacity）：可变拷贝后只改内嵌值
+ *   - 批量读取（5参复数版）：返回字典里的 DesignCapacity → 3500
+ *   - 其余一切键原样放行；不 hook NSUserDefaults / 类方法 / 认证配对
+ *
+ * 编译不使用 ARC（Makefile 已去掉 -fobjc-arc），CF 引用计数全部手工、明确。
  */
 
 #import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
+#import <dlfcn.h>
 #import <substrate.h>
 
-// ============= C 函数声明（extern "C" 避免 C++ 符号 mangling）=============
-extern "C" {
-    typedef struct IORegistryEntry *io_registry_entry_t;
-    typedef UInt32 IOOptionBits;
-    
-    CFTypeRef IORegistryEntryCreateCFProperty(
-        io_registry_entry_t entry, CFStringRef key,
-        CFAllocatorRef allocator, IOOptionBits options
-    );
-}
-// ==========================================================================
+/* 手动类型定义（避开 theos vendor IOKit 头与新版 SDK 冲突） */
+typedef unsigned int       bhf_io_entry_t;     /* io_registry_entry_t = mach port */
+typedef unsigned int       bhf_option_bits_t;  /* IOOptionBits */
+typedef int                bhf_kern_return_t;  /* kern_return_t */
 
-static CFTypeRef (*orig_IORegistryEntryCreateCFProperty)(
-    io_registry_entry_t entry, CFStringRef key,
-    CFAllocatorRef allocator, IOOptionBits options
-);
+static const int32_t kNewCellDesignedCapacity = 3500;
 
-static const int kNewCellDesignedCapacity = 3500;
-static const int kPeakPerformanceCapacity = 100;
-
-static CFTypeRef hook_IORegistryEntryCreateCFProperty(
-    io_registry_entry_t entry, CFStringRef key,
-    CFAllocatorRef allocator, IOOptionBits options
-) {
-    CFTypeRef realValue = orig_IORegistryEntryCreateCFProperty(entry, key, allocator, options);
-    if (!key) return realValue;
-    NSString *keyStr = (__bridge NSString *)key;
-    
-    // --- 诊断日志 ---
-    static NSMutableSet *printedKeys = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ printedKeys = [NSMutableSet set]; });
-    
-    NSArray *kw = @[@"Battery", @"AppleBattery", @"IOPS", @"Capacity",
-                    @"Cycle", @"Peak", @"Serial", @"Pairing", @"UUID"];
-    BOOL isBatteryKey = NO;
-    for (NSString *k in kw) { if ([keyStr containsString:k]) { isBatteryKey = YES; break; } }
-    
-    if (isBatteryKey && ![printedKeys containsObject:keyStr]) {
-        [printedKeys addObject:keyStr];
-        NSLog(@"[BHF/DIAG] %@ → %@", keyStr, realValue ? [(__bridge id)realValue description] : @"nil");
-    }
-    
-    // --- A. DesignedCapacity → 强制改成新电芯标称值 ---
-    if ([keyStr isEqualToString:@"BatteryCapacity"] ||
-        [keyStr isEqualToString:@"DesignedCapacity"] ||
-        [keyStr isEqualToString:@"AppleBatteryDesignCapacity"]) {
-        if (realValue) CFRelease(realValue);
-        NSLog(@"[BHF] %@ → %d", keyStr, kNewCellDesignedCapacity);
-        return CFRetain((__bridge CFTypeRef)@(kNewCellDesignedCapacity));
-    }
-    
-    // --- B. PeakPerformance → 强制 100% ---
-    if ([keyStr isEqualToString:@"PeakPerformanceCapacity"] ||
-        [keyStr isEqualToString:@"BatteryPeakPerformanceCapacity"]) {
-        if (realValue) CFRelease(realValue);
-        return CFRetain((__bridge CFTypeRef)@(kPeakPerformanceCapacity));
-    }
-    
-    // --- C. 认证键 ---
-    if ([keyStr isEqualToString:@"IOPSIsAppleBattery"] ||
-        [keyStr isEqualToString:@"IsAppleBattery"] ||
-        [keyStr isEqualToString:@"AppleBatteryIsVerified"]) {
-        if (!realValue || realValue == kCFBooleanFalse) {
-            if (realValue) CFRelease(realValue);
-            return CFRetain(kCFBooleanTrue);
-        }
-        return realValue;
-    }
-    
-    // --- D. 配对键 ---
-    if ([keyStr containsString:@"Pairing"] ||
-        ([keyStr containsString:@"UUID"] && [keyStr containsString:@"Battery"])) {
-        if (!realValue || realValue == kCFBooleanFalse) {
-            if (realValue) CFRelease(realValue);
-            return CFRetain(kCFBooleanTrue);
-        }
-        return realValue;
-    }
-    
-    // --- E. 其他键 → 全部放行！---
-    return realValue;
+static CFNumberRef bhf_capacity_number(void) {
+    return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type,
+                          &kNewCellDesignedCapacity);
 }
 
-// NSUserDefaults Hook
-static id (*orig_NSUD_objectForKey)(id self, SEL _cmd, NSString *key);
-static id hook_NSUD_objectForKey(id self, SEL _cmd, NSString *key) {
-    id result = orig_NSUD_objectForKey(self, _cmd, key);
-    if ([key containsString:@"PeakPerformance"]) return @100;
-    if (([key containsString:@"isAppleBattery"] ||
-         [key containsString:@"AppleBatteryVerified"]) &&
-        ![key containsString:@"Serial"]) {
-        if (!result || [result boolValue] == NO) return @YES;
+static Boolean bhf_key_is_design_capacity(CFStringRef key) {
+    return CFStringCompare(key, CFSTR("DesignCapacity"), 0) == kCFCompareEqualTo ||
+           CFStringCompare(key, CFSTR("DesignedCapacity"), 0) == kCFCompareEqualTo ||
+           CFStringCompare(key, CFSTR("AppleBatteryDesignCapacity"), 0) == kCFCompareEqualTo;
+}
+
+/* ============ 单键版：CFTypeRef (*)(entry, key, allocator, options) ============ */
+
+typedef CFTypeRef (*bhf_single_fn)(bhf_io_entry_t, CFStringRef,
+                                   CFAllocatorRef, bhf_option_bits_t);
+static bhf_single_fn orig_single = NULL;
+
+static CFTypeRef hook_single(bhf_io_entry_t entry, CFStringRef key,
+                             CFAllocatorRef allocator, bhf_option_bits_t options) {
+    CFTypeRef result = orig_single(entry, key, allocator, options); /* +1 */
+    if (!key || !result) return result;
+
+    /* A. 顶层设计容量键 → 3500 */
+    if (bhf_key_is_design_capacity(key)) {
+        CFRelease(result);
+        return bhf_capacity_number(); /* +1 交给调用方 */
     }
+
+    /* B. BatteryData 字典内嵌 DesignCapacity → 拷贝后只改这一个值 */
+    if (CFStringCompare(key, CFSTR("BatteryData"), 0) == kCFCompareEqualTo &&
+        CFGetTypeID(result) == CFDictionaryGetTypeID() &&
+        CFDictionaryContainsKey((CFDictionaryRef)result, CFSTR("DesignCapacity"))) {
+        CFMutableDictionaryRef copy = CFDictionaryCreateMutableCopy(
+            kCFAllocatorDefault, 0, (CFDictionaryRef)result); /* +1 */
+        if (copy) {
+            CFNumberRef num = bhf_capacity_number();           /* +1 */
+            CFDictionarySetValue(copy, CFSTR("DesignCapacity"), num);
+            CFRelease(num);   /* 字典按 kCFType 回调自持一份，这里平衡创建引用 */
+            CFRelease(result);
+            return copy;      /* +1 交给调用方 */
+        }
+    }
+
+    /* C. 其余全部原样放行 */
     return result;
 }
 
-// SpringBoard 设置入口
-static BOOL hook_SB_showHealthEntry(id self, SEL _cmd) { return YES; }
+/* ========= 批量版：kern_return_t (*)(entry, &dict, allocator, options) ========= */
 
-// 初始化
+typedef bhf_kern_return_t (*bhf_plural_fn)(bhf_io_entry_t, CFMutableDictionaryRef *,
+                                           CFAllocatorRef, bhf_option_bits_t);
+static bhf_plural_fn orig_plural = NULL;
+
+static bhf_kern_return_t hook_plural(bhf_io_entry_t entry,
+                                     CFMutableDictionaryRef *properties,
+                                     CFAllocatorRef allocator,
+                                     bhf_option_bits_t options) {
+    bhf_kern_return_t kr = orig_plural(entry, properties, allocator, options);
+    if (kr == 0 && properties && *properties &&
+        CFDictionaryContainsKey(*properties, CFSTR("DesignCapacity"))) {
+        CFNumberRef num = bhf_capacity_number();               /* +1 */
+        CFDictionarySetValue(*properties, CFSTR("DesignCapacity"), num);
+        CFRelease(num);
+    }
+    return kr;
+}
+
+/* ============================== 初始化 ============================== */
+
 __attribute__((constructor))
 static void initialize(void) {
     @autoreleasepool {
-        NSString *procName = [NSProcessInfo processInfo].processName;
-        if ([procName hasPrefix:@"systemd"] || [procName hasPrefix:@"launchd"]) return;
-        
-        NSLog(@"[BatteryHealthFix] v1.4 loaded in %@", procName);
-        
-        MSHookFunction(
-            (void *)IORegistryEntryCreateCFProperty,
-            (void *)hook_IORegistryEntryCreateCFProperty,
-            (void **)&orig_IORegistryEntryCreateCFProperty
-        );
-        
-        MSHookMessageEx(
-            [NSUserDefaults class], @selector(objectForKey:),
-            (IMP)hook_NSUD_objectForKey,
-            (IMP *)&orig_NSUD_objectForKey
-        );
-        
-        if ([procName isEqualToString:@"SpringBoard"]) {
-            NSArray *classes = @[@"BatteryHealthViewController", @"BatteryDetailViewController",
-                                  @"BatterySettingsController", @"PSSettingsController"];
-            NSArray *methods = @[@"shouldShowBatteryHealth", @"showBatteryHealth",
-                                 @"isBatteryHealthAvailable"];
-            static BOOL (*orig_show)(id, SEL);
-            for (NSString *clsName in classes) {
-                Class c = NSClassFromString(clsName);
-                if (!c) continue;
-                for (NSString *m in methods) {
-                    SEL s = NSSelectorFromString(m);
-                    if ([c instancesRespondToSelector:s]) {
-                        MSHookMessageEx(c, s, (IMP)hook_SB_showHealthEntry, (IMP *)&orig_show);
-                        NSLog(@"[BHF/SB] Hooked %@.%@", clsName, m);
-                    }
-                }
-            }
-        }
+        void *sym_single = dlsym(RTLD_DEFAULT, "IORegistryEntryCreateCFProperty");
+        void *sym_plural = dlsym(RTLD_DEFAULT, "IORegistryEntryCreateCFProperties");
+
+        if (sym_single)
+            MSHookFunction(sym_single, (void *)hook_single, (void **)&orig_single);
+        if (sym_plural)
+            MSHookFunction(sym_plural, (void *)hook_plural, (void **)&orig_plural);
+
+        NSLog(@"[BHF] v1.6 loaded in %@ (single=%s plural=%s)",
+              [NSProcessInfo processInfo].processName,
+              sym_single ? "yes" : "no",
+              sym_plural ? "yes" : "no");
     }
 }

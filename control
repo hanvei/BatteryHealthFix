@@ -1,6 +1,6 @@
 Package: com.twbattery.fix
 Name: BatteryHealthFix
-Version: 1.0.1
+Version: 1.0.3
 Section: Tweaks
 Depends: mobilesubstrate
 Architecture: iphoneos-arm64
